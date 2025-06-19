@@ -38,6 +38,9 @@ cache = {
     "alerts": {"data": None, "timestamp": 0},
 }
 
+# Add a global list to store upload notifications
+UPLOAD_NOTIFICATIONS = []
+
 def is_cache_valid(key):
     return cache[key]["data"] is not None and (time.time() - cache[key]["timestamp"] < CACHE_TTL)
 
@@ -107,6 +110,12 @@ def upload_data(file: UploadFile = File(...)):
     for key in cache:
         cache[key]["data"] = None
         cache[key]["timestamp"] = 0
+    # Add upload notification
+    UPLOAD_NOTIFICATIONS.append({
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "type": "Upload",
+        "message": "New data uploaded successfully."
+    })
     return {"message": "Data uploaded and saved."}
 
 @app.get("/api/stats")
@@ -159,44 +168,8 @@ def get_prediction():
 
 @app.get("/api/alerts")
 def get_alerts():
-    if is_cache_valid("alerts"):
-        return cache["alerts"]["data"]
-    df = get_data()
-    alerts = []
-    # Abnormal heart rate
-    abnormal_hr = df[(df["heart_rate"] < 50) | (df["heart_rate"] > 120)]
-    for _, row in abnormal_hr.iterrows():
-        alerts.append({
-            "timestamp": row["timestamp"],
-            "type": "Heart Rate",
-            "value": row["heart_rate"],
-            "message": "Abnormal heart rate detected"
-        })
-    # Abnormal temperature
-    abnormal_temp = df[(df["temperature"] < 35.5) | (df["temperature"] > 38.5)]
-    for _, row in abnormal_temp.iterrows():
-        alerts.append({
-            "timestamp": row["timestamp"],
-            "type": "Temperature",
-            "value": row["temperature"],
-            "message": "Abnormal temperature detected"
-        })
-    # Advanced spike detection (rolling window)
-    df = df.sort_values("timestamp")
-    for col, label in [("heart_rate", "Heart Rate Spike"), ("temperature", "Temperature Spike")]:
-        rolling_mean = df[col].rolling(window=5, min_periods=3).mean()
-        rolling_std = df[col].rolling(window=5, min_periods=3).std()
-        spikes = (abs(df[col] - rolling_mean) > 2 * rolling_std)
-        for idx in df[spikes].index:
-            alerts.append({
-                "timestamp": df.loc[idx, "timestamp"],
-                "type": label,
-                "value": df.loc[idx, col],
-                "message": f"Sudden spike/drop detected in {col.replace('_', ' ')}"
-            })
-    result = {"alerts": alerts}
-    cache["alerts"]["data"] = result
-    cache["alerts"]["timestamp"] = time.time()
+    # Only return upload notifications
+    result = {"alerts": UPLOAD_NOTIFICATIONS[-10:]}  # Return last 10 notifications
     return result
 
 @app.get("/api/data")
