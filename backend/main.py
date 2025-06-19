@@ -8,6 +8,7 @@ from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
 import database
 import time
+from fastapi.responses import JSONResponse
 
 database.init_db()
 
@@ -146,6 +147,7 @@ def get_alerts():
         return cache["alerts"]["data"]
     df = get_data()
     alerts = []
+    # Abnormal heart rate
     abnormal_hr = df[(df["heart_rate"] < 50) | (df["heart_rate"] > 120)]
     for _, row in abnormal_hr.iterrows():
         alerts.append({
@@ -154,6 +156,7 @@ def get_alerts():
             "value": row["heart_rate"],
             "message": "Abnormal heart rate detected"
         })
+    # Abnormal temperature
     abnormal_temp = df[(df["temperature"] < 35.5) | (df["temperature"] > 38.5)]
     for _, row in abnormal_temp.iterrows():
         alerts.append({
@@ -162,7 +165,61 @@ def get_alerts():
             "value": row["temperature"],
             "message": "Abnormal temperature detected"
         })
+    # Advanced spike detection (rolling window)
+    df = df.sort_values("timestamp")
+    for col, label in [("heart_rate", "Heart Rate Spike"), ("temperature", "Temperature Spike")]:
+        rolling_mean = df[col].rolling(window=5, min_periods=3).mean()
+        rolling_std = df[col].rolling(window=5, min_periods=3).std()
+        spikes = (abs(df[col] - rolling_mean) > 2 * rolling_std)
+        for idx in df[spikes].index:
+            alerts.append({
+                "timestamp": df.loc[idx, "timestamp"],
+                "type": label,
+                "value": df.loc[idx, col],
+                "message": f"Sudden spike/drop detected in {col.replace('_', ' ')}"
+            })
     result = {"alerts": alerts}
     cache["alerts"]["data"] = result
     cache["alerts"]["timestamp"] = time.time()
-    return result 
+    return result
+
+@app.get("/api/data")
+def get_full_data():
+    """Return the cleaned dataset as JSON (for frontend graphing)."""
+    df = get_data()
+    # Convert timestamps to string for JSON serialization
+    df["timestamp"] = df["timestamp"].astype(str)
+    return JSONResponse(content=df.to_dict(orient="records"))
+
+@app.get("/api/column_stats")
+def get_column_stats():
+    """Return detailed stats (mean, median, mode, min, max, std) for each numeric column."""
+    df = get_data()
+    stats = {}
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        col_mean = float(df[col].mean()) if not pd.isnull(df[col].mean()) else None
+        col_median = float(df[col].median()) if not pd.isnull(df[col].median()) else None
+        col_mode = df[col].mode().iloc[0] if not df[col].mode().empty else None
+        if hasattr(col_mode, 'item'):
+            col_mode = col_mode.item()
+        col_min = float(df[col].min()) if not pd.isnull(df[col].min()) else None
+        col_max = float(df[col].max()) if not pd.isnull(df[col].max()) else None
+        col_std = float(df[col].std()) if not pd.isnull(df[col].std()) else None
+        stats[col] = {
+            "mean": col_mean,
+            "median": col_median,
+            "mode": col_mode,
+            "min": col_min,
+            "max": col_max,
+            "std": col_std
+        }
+    return stats
+
+@app.get("/api/correlations")
+def get_correlations():
+    """Return the correlation matrix for numeric columns."""
+    df = get_data()
+    corr = df.select_dtypes(include=[np.number]).corr()
+    # Convert to dict for JSON
+    return corr.round(2).to_dict() 
