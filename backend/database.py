@@ -21,7 +21,9 @@ def init_db():
         target_blood_pressure REAL,
         target_heart_rate REAL,
         target_health_status TEXT,
-        battery_level INTEGER
+        battery_level INTEGER,
+        sleep REAL,
+        steps INTEGER
     )''')
     conn.commit()
     conn.close()

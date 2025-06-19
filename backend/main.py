@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,7 +10,12 @@ from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
 import database
 import time
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+import matplotlib.pyplot as plt
+import seaborn as sns
+import io
+import base64
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 
 database.init_db()
 
@@ -22,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), '../healthcare_iot_target_dataset.csv')
+DATA_PATH = os.path.join(os.path.dirname(__file__), '../dataset.csv')
 CACHE_TTL = 300  # 5 minutes
 cache = {
     "stats": {"data": None, "timestamp": 0},
@@ -60,7 +67,9 @@ def get_data():
         "Target_Blood_Pressure": "target_blood_pressure",
         "Target_Heart_Rate": "target_heart_rate",
         "Target_Health_Status": "target_health_status",
-        "Battery_Level (%)": "battery_level"
+        "Battery_Level (%)": "battery_level",
+        "Sleep": "sleep",
+        "Steps": "steps"
     })
     return df
 
@@ -73,7 +82,8 @@ def upload_data(file: UploadFile = File(...)):
     required_cols = [
         "Patient_ID", "Timestamp", "Sensor_ID", "Sensor_Type", "Temperature (°C)",
         "Systolic_BP (mmHg)", "Diastolic_BP (mmHg)", "Heart_Rate (bpm)", "Device_Battery_Level (%)",
-        "Target_Blood_Pressure", "Target_Heart_Rate", "Target_Health_Status", "Battery_Level (%)"
+        "Target_Blood_Pressure", "Target_Heart_Rate", "Target_Health_Status", "Battery_Level (%)",
+        "Sleep", "Steps"
     ]
     for col in required_cols:
         if col not in df.columns:
@@ -84,7 +94,8 @@ def upload_data(file: UploadFile = File(...)):
     # Rename columns to match DB
     df.columns = [
         "patient_id", "timestamp", "sensor_id", "sensor_type", "temperature", "systolic_bp", "diastolic_bp",
-        "heart_rate", "device_battery_level", "target_blood_pressure", "target_heart_rate", "target_health_status", "battery_level"
+        "heart_rate", "device_battery_level", "target_blood_pressure", "target_heart_rate", "target_health_status", "battery_level",
+        "sleep", "steps"
     ]
     database.insert_records(df)
     # Invalidate cache
@@ -222,4 +233,109 @@ def get_correlations():
     df = get_data()
     corr = df.select_dtypes(include=[np.number]).corr()
     # Convert to dict for JSON
-    return corr.round(2).to_dict() 
+    return corr.round(2).to_dict()
+
+def plot_to_base64(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    return img_base64
+
+@app.get("/api/eda/bar_chart")
+def eda_bar_chart():
+    df = get_data()
+    fig, ax = plt.subplots(figsize=(6,4))
+    df['sensor_type'].value_counts().plot(kind='bar', ax=ax)
+    ax.set_title('Sensor Type Counts')
+    ax.set_xlabel('Sensor Type')
+    ax.set_ylabel('Count')
+    img_base64 = plot_to_base64(fig)
+    return {"image": img_base64}
+
+@app.get("/api/eda/histogram")
+def eda_histogram():
+    df = get_data()
+    fig, ax = plt.subplots(figsize=(6,4))
+    ax.hist(df['heart_rate'].dropna(), bins=20, color='skyblue')
+    ax.set_title('Heart Rate Distribution')
+    ax.set_xlabel('Heart Rate')
+    ax.set_ylabel('Frequency')
+    img_base64 = plot_to_base64(fig)
+    return {"image": img_base64}
+
+@app.get("/api/eda/count_plot")
+def eda_count_plot():
+    df = get_data()
+    fig, ax = plt.subplots(figsize=(6,4))
+    sns.countplot(x='target_health_status', data=df, ax=ax)
+    ax.set_title('Target Health Status Count')
+    img_base64 = plot_to_base64(fig)
+    return {"image": img_base64}
+
+@app.get("/api/eda/corr_heatmap")
+def eda_corr_heatmap():
+    df = get_data()
+    fig, ax = plt.subplots(figsize=(7,6))
+    corr = df.select_dtypes(include=[np.number]).corr()
+    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
+    ax.set_title('Correlation Heatmap')
+    img_base64 = plot_to_base64(fig)
+    return {"image": img_base64}
+
+@app.get("/api/preprocessing_summary")
+def preprocessing_summary():
+    df = get_data()
+    summary = {}
+    # Missing values
+    missing = df.isnull().sum().to_dict()
+    summary['missing_values'] = missing
+    # Label encoding for binary variables
+    label_enc_cols = [col for col in df.columns if df[col].nunique() == 2 and df[col].dtype == 'object']
+    label_encodings = {}
+    for col in label_enc_cols:
+        le = LabelEncoder()
+        df[col] = le.fit_transform(df[col].astype(str))
+        label_encodings[col] = list(le.classes_)
+    summary['label_encoded'] = label_encodings
+    # One-hot encoding for nominal variables
+    nominal_cols = [col for col in df.select_dtypes(include='object').columns if col not in label_enc_cols and col != 'timestamp']
+    onehot_cols = {}
+    for col in nominal_cols:
+        ohe = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+        transformed = ohe.fit_transform(df[[col]].astype(str))
+        onehot_cols[col] = list(ohe.categories_[0])
+    summary['onehot_encoded'] = onehot_cols
+    # Feature scaling for numerical variables
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(df[num_cols])
+    summary['scaled_features'] = num_cols
+    # Date fields
+    if 'timestamp' in df.columns:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        summary['date_features'] = ['year', 'month', 'day', 'hour', 'minute']
+    # Target encoding
+    if 'target_health_status' in df.columns:
+        le = LabelEncoder()
+        df['target_health_status_encoded'] = le.fit_transform(df['target_health_status'].astype(str))
+        summary['target_encoding'] = list(le.classes_)
+    return summary
+
+@app.get("/api/feature_engineering")
+def feature_engineering():
+    df = get_data()
+    features = {}
+    # Example: extract date parts
+    if 'timestamp' in df.columns:
+        df['year'] = pd.to_datetime(df['timestamp']).dt.year
+        df['month'] = pd.to_datetime(df['timestamp']).dt.month
+        df['day'] = pd.to_datetime(df['timestamp']).dt.day
+        df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
+        features['date_parts'] = ['year', 'month', 'day', 'hour']
+    # Example: interaction term
+    if 'heart_rate' in df.columns and 'temperature' in df.columns:
+        df['hr_temp_interaction'] = df['heart_rate'] * df['temperature']
+        features['interaction_terms'] = ['hr_temp_interaction']
+    return features 
