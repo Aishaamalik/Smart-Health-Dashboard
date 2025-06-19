@@ -168,8 +168,9 @@ def get_prediction():
 
 @app.get("/api/alerts")
 def get_alerts():
-    # Only return upload notifications
-    result = {"alerts": UPLOAD_NOTIFICATIONS[-10:]}  # Return last 10 notifications
+    # Only show non-health alerts (e.g., upload notifications)
+    alerts_sorted = sorted(UPLOAD_NOTIFICATIONS, key=lambda x: str(x.get("timestamp", "")), reverse=True)
+    result = {"alerts": alerts_sorted[:20]}
     return result
 
 @app.get("/api/data")
