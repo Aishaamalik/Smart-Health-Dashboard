@@ -29,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), '../dataset.csv')
+DATA_PATH = os.path.join(os.path.dirname(__file__), '../dataset1.csv')
 CACHE_TTL = 300  # 5 minutes
 cache = {
     "stats": {"data": None, "timestamp": 0},
@@ -50,7 +50,7 @@ def get_data():
             return df
     except Exception:
         pass
-    df = pd.read_csv(DATA_PATH)
+    df = pd.read_csv(DATA_PATH, encoding='latin1')
     df = df.drop_duplicates()
     df = df.dropna(subset=["Timestamp", "Heart_Rate (bpm)", "Temperature (°C)"])
     df["Timestamp"] = pd.to_datetime(df["Timestamp"])
@@ -68,9 +68,13 @@ def get_data():
         "Target_Heart_Rate": "target_heart_rate",
         "Target_Health_Status": "target_health_status",
         "Battery_Level (%)": "battery_level",
-        "Sleep": "sleep",
+        "Sleep (hrs)": "sleep",
         "Steps": "steps"
     })
+    # Remap patient_id to sequential numbers starting from 1
+    unique_ids = df['patient_id'].unique()
+    id_map = {old_id: new_id for new_id, old_id in enumerate(unique_ids, start=1)}
+    df['patient_id'] = df['patient_id'].map(id_map)
     return df
 
 @app.post("/api/upload")
@@ -151,6 +155,56 @@ def get_prediction():
     cache["predict"]["data"] = result
     cache["predict"]["timestamp"] = time.time()
     return result
+
+@app.get("/api/predict_steps")
+def get_steps_prediction():
+    df = get_data()
+    df = df.sort_values("timestamp")
+    df = df.reset_index(drop=True)
+    df["ordinal_time"] = df["timestamp"].map(lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S") if isinstance(x, str) else x)
+    df["ordinal_time"] = df["ordinal_time"].map(lambda x: x.toordinal())
+    X = df["ordinal_time"].values.reshape(-1, 1)
+    y = df["steps"].values
+    model = LinearRegression()
+    model.fit(X, y)
+    last_date = df["timestamp"].max()
+    if isinstance(last_date, str):
+        last_date = datetime.strptime(last_date, "%Y-%m-%d %H:%M:%S")
+    preds = []
+    for i in range(1, 8):
+        future_date = last_date + timedelta(days=i)
+        pred = model.predict(np.array([[future_date.toordinal()]]))[0]
+        preds.append({
+            "date": future_date.strftime("%Y-%m-%d"),
+            "predicted_steps": round(pred, 2)
+        })
+    return {"predictions": preds}
+
+@app.get("/api/predict_sleep")
+def get_sleep_prediction():
+    df = get_data()
+    if "sleep" not in df.columns:
+        raise HTTPException(status_code=400, detail="'sleep' column not found in data.")
+    df = df.sort_values("timestamp")
+    df = df.reset_index(drop=True)
+    df["ordinal_time"] = df["timestamp"].map(lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S") if isinstance(x, str) else x)
+    df["ordinal_time"] = df["ordinal_time"].map(lambda x: x.toordinal())
+    X = df["ordinal_time"].values.reshape(-1, 1)
+    y = df["sleep"].values
+    model = LinearRegression()
+    model.fit(X, y)
+    last_date = df["timestamp"].max()
+    if isinstance(last_date, str):
+        last_date = datetime.strptime(last_date, "%Y-%m-%d %H:%M:%S")
+    preds = []
+    for i in range(1, 8):
+        future_date = last_date + timedelta(days=i)
+        pred = model.predict(np.array([[future_date.toordinal()]]))[0]
+        preds.append({
+            "date": future_date.strftime("%Y-%m-%d"),
+            "predicted_sleep": round(pred, 2)
+        })
+    return {"predictions": preds}
 
 @app.get("/api/alerts")
 def get_alerts():
@@ -338,4 +392,62 @@ def feature_engineering():
     if 'heart_rate' in df.columns and 'temperature' in df.columns:
         df['hr_temp_interaction'] = df['heart_rate'] * df['temperature']
         features['interaction_terms'] = ['hr_temp_interaction']
-    return features 
+    return features
+
+@app.get("/api/predict_steps_per_patient")
+def get_steps_prediction_per_patient():
+    df = get_data()
+    results = {}
+    for pid, group in df.groupby("patient_id"):
+        group = group.sort_values("timestamp").reset_index(drop=True)
+        if group.shape[0] < 2:
+            continue
+        group["ordinal_time"] = group["timestamp"].map(lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S") if isinstance(x, str) else x)
+        group["ordinal_time"] = group["ordinal_time"].map(lambda x: x.toordinal())
+        X = group["ordinal_time"].values.reshape(-1, 1)
+        y = group["steps"].values
+        model = LinearRegression()
+        model.fit(X, y)
+        last_date = group["timestamp"].max()
+        if isinstance(last_date, str):
+            last_date = datetime.strptime(last_date, "%Y-%m-%d %H:%M:%S")
+        preds = []
+        for i in range(1, 8):
+            future_date = last_date + timedelta(days=i)
+            pred = model.predict(np.array([[future_date.toordinal()]]))[0]
+            preds.append({
+                "date": future_date.strftime("%Y-%m-%d"),
+                "predicted_steps": round(pred, 2)
+            })
+        results[pid] = preds
+    return {"predictions": results}
+
+@app.get("/api/predict_sleep_per_patient")
+def get_sleep_prediction_per_patient():
+    df = get_data()
+    if "sleep" not in df.columns:
+        raise HTTPException(status_code=400, detail="'sleep' column not found in data.")
+    results = {}
+    for pid, group in df.groupby("patient_id"):
+        group = group.sort_values("timestamp").reset_index(drop=True)
+        if group.shape[0] < 2:
+            continue
+        group["ordinal_time"] = group["timestamp"].map(lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S") if isinstance(x, str) else x)
+        group["ordinal_time"] = group["ordinal_time"].map(lambda x: x.toordinal())
+        X = group["ordinal_time"].values.reshape(-1, 1)
+        y = group["sleep"].values
+        model = LinearRegression()
+        model.fit(X, y)
+        last_date = group["timestamp"].max()
+        if isinstance(last_date, str):
+            last_date = datetime.strptime(last_date, "%Y-%m-%d %H:%M:%S")
+        preds = []
+        for i in range(1, 8):
+            future_date = last_date + timedelta(days=i)
+            pred = model.predict(np.array([[future_date.toordinal()]]))[0]
+            preds.append({
+                "date": future_date.strftime("%Y-%m-%d"),
+                "predicted_sleep": round(pred, 2)
+            })
+        results[pid] = preds
+    return {"predictions": results} 
