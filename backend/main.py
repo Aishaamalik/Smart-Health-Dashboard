@@ -16,6 +16,7 @@ import seaborn as sns
 import io
 import base64
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
+from sklearn.ensemble import RandomForestRegressor
 
 database.init_db()
 
@@ -155,56 +156,6 @@ def get_prediction():
     cache["predict"]["data"] = result
     cache["predict"]["timestamp"] = time.time()
     return result
-
-@app.get("/api/predict_steps")
-def get_steps_prediction():
-    df = get_data()
-    df = df.sort_values("timestamp")
-    df = df.reset_index(drop=True)
-    df["ordinal_time"] = df["timestamp"].map(lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S") if isinstance(x, str) else x)
-    df["ordinal_time"] = df["ordinal_time"].map(lambda x: x.toordinal())
-    X = df["ordinal_time"].values.reshape(-1, 1)
-    y = df["steps"].values
-    model = LinearRegression()
-    model.fit(X, y)
-    last_date = df["timestamp"].max()
-    if isinstance(last_date, str):
-        last_date = datetime.strptime(last_date, "%Y-%m-%d %H:%M:%S")
-    preds = []
-    for i in range(1, 8):
-        future_date = last_date + timedelta(days=i)
-        pred = model.predict(np.array([[future_date.toordinal()]]))[0]
-        preds.append({
-            "date": future_date.strftime("%Y-%m-%d"),
-            "predicted_steps": round(pred, 2)
-        })
-    return {"predictions": preds}
-
-@app.get("/api/predict_sleep")
-def get_sleep_prediction():
-    df = get_data()
-    if "sleep" not in df.columns:
-        raise HTTPException(status_code=400, detail="'sleep' column not found in data.")
-    df = df.sort_values("timestamp")
-    df = df.reset_index(drop=True)
-    df["ordinal_time"] = df["timestamp"].map(lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S") if isinstance(x, str) else x)
-    df["ordinal_time"] = df["ordinal_time"].map(lambda x: x.toordinal())
-    X = df["ordinal_time"].values.reshape(-1, 1)
-    y = df["sleep"].values
-    model = LinearRegression()
-    model.fit(X, y)
-    last_date = df["timestamp"].max()
-    if isinstance(last_date, str):
-        last_date = datetime.strptime(last_date, "%Y-%m-%d %H:%M:%S")
-    preds = []
-    for i in range(1, 8):
-        future_date = last_date + timedelta(days=i)
-        pred = model.predict(np.array([[future_date.toordinal()]]))[0]
-        preds.append({
-            "date": future_date.strftime("%Y-%m-%d"),
-            "predicted_sleep": round(pred, 2)
-        })
-    return {"predictions": preds}
 
 @app.get("/api/alerts")
 def get_alerts():
@@ -398,23 +349,40 @@ def feature_engineering():
 def get_steps_prediction_per_patient():
     df = get_data()
     results = {}
+    feature_cols = [
+        "ordinal_time", "heart_rate", "temperature", "systolic_bp", "diastolic_bp", "device_battery_level", "battery_level"
+    ]
     for pid, group in df.groupby("patient_id"):
         group = group.sort_values("timestamp").reset_index(drop=True)
         if group.shape[0] < 2:
             continue
         group["ordinal_time"] = group["timestamp"].map(lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S") if isinstance(x, str) else x)
         group["ordinal_time"] = group["ordinal_time"].map(lambda x: x.toordinal())
-        X = group["ordinal_time"].values.reshape(-1, 1)
+        # Fill missing features with mean
+        for col in feature_cols:
+            if col not in group.columns:
+                group[col] = group[col].mean()
+        X = group[feature_cols].values
         y = group["steps"].values
-        model = LinearRegression()
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
         model.fit(X, y)
-        last_date = group["timestamp"].max()
+        last_row = group.iloc[-1]
+        last_date = last_row["timestamp"]
         if isinstance(last_date, str):
             last_date = datetime.strptime(last_date, "%Y-%m-%d %H:%M:%S")
         preds = []
         for i in range(1, 8):
             future_date = last_date + timedelta(days=i)
-            pred = model.predict(np.array([[future_date.toordinal()]]))[0]
+            future_features = [
+                future_date.toordinal(),
+                last_row["heart_rate"],
+                last_row["temperature"],
+                last_row["systolic_bp"],
+                last_row["diastolic_bp"],
+                last_row["device_battery_level"],
+                last_row["battery_level"]
+            ]
+            pred = model.predict([future_features])[0]
             preds.append({
                 "date": future_date.strftime("%Y-%m-%d"),
                 "predicted_steps": round(pred, 2)
@@ -428,23 +396,40 @@ def get_sleep_prediction_per_patient():
     if "sleep" not in df.columns:
         raise HTTPException(status_code=400, detail="'sleep' column not found in data.")
     results = {}
+    feature_cols = [
+        "ordinal_time", "heart_rate", "temperature", "systolic_bp", "diastolic_bp", "device_battery_level", "battery_level"
+    ]
     for pid, group in df.groupby("patient_id"):
         group = group.sort_values("timestamp").reset_index(drop=True)
         if group.shape[0] < 2:
             continue
         group["ordinal_time"] = group["timestamp"].map(lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S") if isinstance(x, str) else x)
         group["ordinal_time"] = group["ordinal_time"].map(lambda x: x.toordinal())
-        X = group["ordinal_time"].values.reshape(-1, 1)
+        # Fill missing features with mean
+        for col in feature_cols:
+            if col not in group.columns:
+                group[col] = group[col].mean()
+        X = group[feature_cols].values
         y = group["sleep"].values
-        model = LinearRegression()
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
         model.fit(X, y)
-        last_date = group["timestamp"].max()
+        last_row = group.iloc[-1]
+        last_date = last_row["timestamp"]
         if isinstance(last_date, str):
             last_date = datetime.strptime(last_date, "%Y-%m-%d %H:%M:%S")
         preds = []
         for i in range(1, 8):
             future_date = last_date + timedelta(days=i)
-            pred = model.predict(np.array([[future_date.toordinal()]]))[0]
+            future_features = [
+                future_date.toordinal(),
+                last_row["heart_rate"],
+                last_row["temperature"],
+                last_row["systolic_bp"],
+                last_row["diastolic_bp"],
+                last_row["device_battery_level"],
+                last_row["battery_level"]
+            ]
+            pred = model.predict([future_features])[0]
             preds.append({
                 "date": future_date.strftime("%Y-%m-%d"),
                 "predicted_sleep": round(pred, 2)
