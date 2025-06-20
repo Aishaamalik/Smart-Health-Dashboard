@@ -8,7 +8,7 @@ import numpy as np
 import os
 from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
-import database
+import backend.database as database
 import time
 from fastapi.responses import JSONResponse, Response
 import matplotlib.pyplot as plt
@@ -435,4 +435,46 @@ def get_sleep_prediction_per_patient():
                 "predicted_sleep": round(pred, 2)
             })
         results[pid] = preds
+    return {"predictions": results}
+
+@app.get("/api/predict_steps_7days")
+def predict_steps_7days():
+    df = get_data()
+    step_cols = [f'Step_Day{i}' for i in range(1, 8)]
+    for col in step_cols:
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Missing column: {col}")
+    X_steps = df[step_cols].values
+    from sklearn.ensemble import RandomForestRegressor
+    model_steps = RandomForestRegressor(n_estimators=100, random_state=42)
+    y_steps = df[step_cols].mean(axis=1)  # Dummy target
+    model_steps.fit(X_steps, y_steps)
+    pred_steps = model_steps.predict(X_steps)
+    results = []
+    for idx, row in df.iterrows():
+        results.append({
+            'patient_id': int(row['patient_id']) if 'patient_id' in row else idx+1,
+            'predicted_step_day8': int(pred_steps[idx])
+        })
+    return {"predictions": results}
+
+@app.get("/api/predict_sleep_7days")
+def predict_sleep_7days():
+    df = get_data()
+    sleep_cols = [f'Sleep_Day{i}' for i in range(1, 8)]
+    for col in sleep_cols:
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Missing column: {col}")
+    X_sleep = df[sleep_cols].values
+    from sklearn.ensemble import RandomForestRegressor
+    model_sleep = RandomForestRegressor(n_estimators=100, random_state=42)
+    y_sleep = df[sleep_cols].mean(axis=1)  # Dummy target
+    model_sleep.fit(X_sleep, y_sleep)
+    pred_sleep = model_sleep.predict(X_sleep)
+    results = []
+    for idx, row in df.iterrows():
+        results.append({
+            'patient_id': int(row['patient_id']) if 'patient_id' in row else idx+1,
+            'predicted_sleep_day8': float(pred_sleep[idx])
+        })
     return {"predictions": results} 
