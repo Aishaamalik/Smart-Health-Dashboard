@@ -51,6 +51,14 @@ def get_data():
         df = database.fetch_all_records()
         if not df.empty:
             df["timestamp"] = pd.to_datetime(df["timestamp"])
+            # Add notification for health data loaded (from DB)
+            if not UPLOAD_NOTIFICATIONS or UPLOAD_NOTIFICATIONS[-1].get('type') != 'Load' or \
+                (datetime.now() - datetime.strptime(UPLOAD_NOTIFICATIONS[-1]['timestamp'], "%Y-%m-%d %H:%M:%S")).total_seconds() > 60:
+                UPLOAD_NOTIFICATIONS.append({
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "type": "Load",
+                    "message": "Health data loaded successfully."
+                })
             return df
     except Exception:
         pass
@@ -75,6 +83,14 @@ def get_data():
         "Sleep (hrs)": "sleep",
         "Steps": "steps"
     })
+    # Add notification for health data loaded (from CSV)
+    if not UPLOAD_NOTIFICATIONS or UPLOAD_NOTIFICATIONS[-1].get('type') != 'Load' or \
+        (datetime.now() - datetime.strptime(UPLOAD_NOTIFICATIONS[-1]['timestamp'], "%Y-%m-%d %H:%M:%S")).total_seconds() > 60:
+        UPLOAD_NOTIFICATIONS.append({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "type": "Load",
+            "message": "Health data loaded successfully."
+        })
     # Remap patient_id to sequential numbers starting from 1
     unique_ids = df['patient_id'].unique()
     id_map = {old_id: new_id for new_id, old_id in enumerate(unique_ids, start=1)}
@@ -256,10 +272,20 @@ def eda_count_plot():
 @app.get("/api/eda/corr_heatmap")
 def eda_corr_heatmap():
     df = get_data()
-    fig, ax = plt.subplots(figsize=(7,6))
+    fig, ax = plt.subplots(figsize=(16, 14))  # Larger figure
     corr = df.select_dtypes(include=[np.number]).corr()
-    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
-    ax.set_title('Correlation Heatmap')
+    sns.heatmap(
+        corr,
+        annot=True,
+        cmap='coolwarm',
+        ax=ax,
+        annot_kws={'size': 8},  # Smaller font for numbers
+        fmt='.2f'
+    )
+    ax.set_title('Correlation Heatmap', fontsize=18)
+    ax.tick_params(axis='x', labelrotation=45, labelsize=10)
+    ax.tick_params(axis='y', labelsize=10)
+    fig.tight_layout()
     img_base64 = plot_to_base64(fig)
     return {"image": img_base64}
 
